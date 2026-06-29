@@ -9,12 +9,11 @@ Usage in nodes:
     response = llm.invoke("Hello")
 """
 
-from __future__ import annotations
-
 import os
+from typing import Any
 
 
-def get_llm(model: str | None = None, temperature: float = 0.0):
+def get_llm(model: str | None = None, temperature: float = 0.0) -> Any:
     """Create an LLM client from environment configuration.
 
     Checks for API keys in this order:

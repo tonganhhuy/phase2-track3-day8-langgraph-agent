@@ -1,169 +1,4 @@
-"""Report generation helper."""
-
-from __future__ import annotations
-
-from pathlib import Path
-
-from .metrics import MetricsReport
-
-
-def get_student_info() -> tuple[str, str, str]:
-    """Parse student information from reports/lab_report.md if it exists."""
-    name = "Tống Anh Huyh"
-    repo = "Main Branch"
-    date = "2026-06-29"
-    try:
-        report_path = Path("reports/lab_report.md")
-        if report_path.exists():
-            content = report_path.read_text(encoding="utf-8")
-            for line in content.splitlines():
-                if line.strip().startswith("- Name:"):
-                    name = line.split(":", 1)[1].strip()
-                elif line.strip().startswith("- Repo/commit:"):
-                    repo = line.split(":", 1)[1].strip()
-                elif line.strip().startswith("- Date:"):
-                    date = line.split(":", 1)[1].strip()
-    except Exception:
-        pass
-    return name, repo, date
-
-
-def render_report(metrics: MetricsReport) -> str:
-    """Render a complete lab report from metrics data."""
-    student_name, repo_commit, date = get_student_info()
-    rows = []
-    for item in metrics.scenario_metrics:
-        success_icon = "✅ Yes" if item.success else "❌ No"
-        actual_route_str = item.actual_route if item.actual_route else "N/A"
-        rows.append(
-            f"| {item.scenario_id} | {item.expected_route} | {actual_route_str} | {success_icon} | {item.retry_count} | {item.interrupt_count} |"
-        )
-    scenario_table = "\n".join(rows)
-
-    return f"""# Day 08 Lab Report
-
-## 1. Team / student
-
-- Name: {student_name}
-- Repo/commit: {repo_commit}
-- Date: {date}
-
-## 2. Architecture
-
-The system utilizes LangGraph to coordinate a ticket-handling assistant. The architecture involves 11 nodes that normalize, classify, route, evaluate, process, and finalize operations.
-
-```mermaid
-graph TD
-    START --> intake
-    intake --> classify
-    classify -->|simple| answer
-    classify -->|tool| tool
-    classify -->|missing_info| clarify
-    classify -->|risky| risky_action
-    classify -->|error| retry
-    
-    risky_action --> approval
-    approval -->|approved| tool
-    approval -->|rejected| clarify
-    
-    tool --> evaluate
-    evaluate -->|success| answer
-    evaluate -->|needs_retry| retry
-    
-    retry -->|attempt < max_attempts| tool
-    retry -->|attempt >= max_attempts| dead_letter
-    
-    clarify --> finalize
-    answer --> finalize
-    dead_letter --> finalize
-    finalize --> END
-```
-
-## 3. State schema
-
-The state schema is defined in `AgentState` with a mix of overwriting and appending fields:
-
-| Field | Reducer | Why |
-|---|---|---|
-| thread_id | None (overwrite) | Identifies the unique session thread |
-| scenario_id | None (overwrite) | Tracks scenario identifier |
-| query | None (overwrite) | Stores current ticket query |
-| route | None (overwrite) | Decided dynamically by the LLM classification |
-| risk_level | None (overwrite) | Tracks high/low safety concerns |
-| attempt | None (overwrite) | Tracks current execution attempt count |
-| max_attempts | None (overwrite) | Defines threshold for dead-letter fallback |
-| final_answer | None (overwrite) | Holds generated final response |
-| evaluation_result | None (overwrite) | Evaluation outcome driving the retry loop |
-| pending_question | None (overwrite) | Questions to ask the user in case of missing info |
-| proposed_action | None (overwrite) | Proposed action details for risky requests |
-| approval | None (overwrite) | Object holding approval decision state |
-| messages | `operator.add` (append) | Complete conversation audit log |
-| tool_results | `operator.add` (append) | Accumulates result history from tools |
-| errors | `operator.add` (append) | Accumulates encountered runtime errors |
-| events | `operator.add` (append) | Internal tracing/grading event log |
-
-## 4. Scenario results
-
-Total Scenarios: {metrics.total_scenarios}
-Success Rate: {metrics.success_rate:.2%}
-Total Retries: {metrics.total_retries}
-Total Interrupts: {metrics.total_interrupts}
-
-| Scenario | Expected route | Actual route | Success | Retries | Interrupts |
-|---|---|---|---:|---:|---:|
-{scenario_table}
-
-## 5. Failure analysis
-
-We analyzed two primary failure modes:
-
-1. **Retry / Tool Failure exhaustion (S07_dead_letter)**:
-   When external dependencies fail consistently (e.g. timeout error), we increment `attempt` inside the `retry` node. When `attempt >= max_attempts`, the conditional edge routes to the `dead_letter` node, ensuring the system doesn't enter an infinite loop. It returns a graceful explanation to the user instead of crashing or leaking raw stack traces.
-
-2. **Risky Action Bypass Prevention (S04_risky, S06_delete)**:
-   All high-risk user intents (such as processing refunds or deleting accounts) must route through `risky_action` and `approval` nodes. If human-in-the-loop is active, execution interrupts. If the request is rejected, the graph routes to `clarify` (clarification) rather than executing `tool` operations, ensuring strict safety controls.
-
-## 6. Persistence / recovery evidence
-
-The checkpointer is configured dynamically. When configured as `sqlite`, a SQLite DB is initialized with WAL mode enabled. Using `thread_id` allows storing and retrieving history, resuming checkpoints after interruption (HITL), or recovering from transient workflow state.
-
-## 7. Extension work
-
-We completed:
-- **SQLite checkpointer persistence**: Full implementation using SQLite3 and WAL mode.
-- **Real HITL**: Uses `langgraph.types.interrupt` when `LANGGRAPH_INTERRUPT=true` to suspend graph execution and wait for manual approval.
-- **LLM-as-judge**: High quality tool evaluation logic inside `evaluate_node`.
-- **Graph diagram**: Provided a Mermaid diagram structure.
-
-## 8. Improvement plan
-
-If we had one more day, we would:
-1. Add structured logging integration (e.g. LangSmith or OpenTelemetry) to trace latency and tokens.
-2. Productionize the prompt templates with robust handling for negative/jailbreak scenarios.
-3. Build a beautiful Streamlit UI to demonstrate approval/rejection and conversation state.
-"""
-
-
-def render_html_report(metrics: MetricsReport, student_name: str, repo_commit: str, date: str) -> str:
-    """Render a complete HTML lab report from metrics data."""
-    rows = []
-    for item in metrics.scenario_metrics:
-        success_class = "badge-success" if item.success else "badge-error"
-        success_text = "Success" if item.success else "Failed"
-        actual_route_str = item.actual_route if item.actual_route else "N/A"
-        rows.append(
-            f"<tr>"
-            f"<td><code>{item.scenario_id}</code></td>"
-            f"<td><code>{item.expected_route}</code></td>"
-            f"<td><code>{actual_route_str}</code></td>"
-            f"<td><span class=\"badge {success_class}\">{success_text}</span></td>"
-            f"<td>{item.retry_count}</td>"
-            f"<td>{item.interrupt_count}</td>"
-            f"</tr>"
-        )
-    html_table_rows = "\n".join(rows)
-
-    template = """<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -392,15 +227,15 @@ def render_html_report(metrics: MetricsReport, student_name: str, repo_commit: s
             <div class="info-grid">
                 <div class="info-card">
                     <span>Student / Team</span>
-                    <p>{{STUDENT_NAME}}</p>
+                    <p>Tống Anh Huy</p>
                 </div>
                 <div class="info-card">
                     <span>Repository / Commit</span>
-                    <p>{{REPO_COMMIT}}</p>
+                    <p>Main Branch</p>
                 </div>
                 <div class="info-card">
                     <span>Date</span>
-                    <p>{{DATE}}</p>
+                    <p>2026-06-29</p>
                 </div>
             </div>
         </header>
@@ -472,19 +307,19 @@ graph TD
             <h2>4. Scenario Results</h2>
             <div class="stats-grid">
                 <div class="stat-card">
-                    <div class="stat-val">{{TOTAL_SCENARIOS}}</div>
+                    <div class="stat-val">7</div>
                     <div class="stat-lbl">Total Scenarios</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-val">{{SUCCESS_RATE}}</div>
+                    <div class="stat-val">100.00%</div>
                     <div class="stat-lbl">Success Rate</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-val">{{TOTAL_RETRIES}}</div>
+                    <div class="stat-val">3</div>
                     <div class="stat-lbl">Total Retries</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-val">{{TOTAL_INTERRUPTS}}</div>
+                    <div class="stat-val">2</div>
                     <div class="stat-lbl">Total Interrupts</div>
                 </div>
             </div>
@@ -500,7 +335,13 @@ graph TD
                     </tr>
                 </thead>
                 <tbody>
-                    {{HTML_TABLE_ROWS}}
+                    <tr><td><code>S01_simple</code></td><td><code>simple</code></td><td><code>simple</code></td><td><span class="badge badge-success">Success</span></td><td>0</td><td>0</td></tr>
+<tr><td><code>S02_tool</code></td><td><code>tool</code></td><td><code>tool</code></td><td><span class="badge badge-success">Success</span></td><td>0</td><td>0</td></tr>
+<tr><td><code>S03_missing</code></td><td><code>missing_info</code></td><td><code>missing_info</code></td><td><span class="badge badge-success">Success</span></td><td>0</td><td>0</td></tr>
+<tr><td><code>S04_risky</code></td><td><code>risky</code></td><td><code>risky</code></td><td><span class="badge badge-success">Success</span></td><td>0</td><td>1</td></tr>
+<tr><td><code>S05_error</code></td><td><code>error</code></td><td><code>error</code></td><td><span class="badge badge-success">Success</span></td><td>2</td><td>0</td></tr>
+<tr><td><code>S06_delete</code></td><td><code>risky</code></td><td><code>risky</code></td><td><span class="badge badge-success">Success</span></td><td>0</td><td>1</td></tr>
+<tr><td><code>S07_dead_letter</code></td><td><code>error</code></td><td><code>error</code></td><td><span class="badge badge-success">Success</span></td><td>1</td><td>0</td></tr>
                 </tbody>
             </table>
         </div>
@@ -545,28 +386,3 @@ graph TD
     </script>
 </body>
 </html>
-"""
-    return (template
-            .replace("{{STUDENT_NAME}}", student_name)
-            .replace("{{REPO_COMMIT}}", repo_commit)
-            .replace("{{DATE}}", date)
-            .replace("{{TOTAL_SCENARIOS}}", str(metrics.total_scenarios))
-            .replace("{{SUCCESS_RATE}}", f"{metrics.success_rate:.2%}")
-            .replace("{{TOTAL_RETRIES}}", str(metrics.total_retries))
-            .replace("{{TOTAL_INTERRUPTS}}", str(metrics.total_interrupts))
-            .replace("{{HTML_TABLE_ROWS}}", html_table_rows))
-
-
-def write_report(metrics: MetricsReport, output_path: str | Path) -> None:
-    """Write the rendered report to a file (both MD and HTML formats)."""
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Write Markdown
-    path.write_text(render_report(metrics), encoding="utf-8")
-    
-    # Write HTML
-    student_name, repo_commit, date = get_student_info()
-    html_path = path.with_suffix(".html")
-    html_content = render_html_report(metrics, student_name, repo_commit, date)
-    html_path.write_text(html_content, encoding="utf-8")
